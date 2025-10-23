@@ -1,0 +1,59 @@
+from datasets import load_dataset
+ 
+# Example: MS MARCO for RAG
+ds = load_dataset("ms_marco", "v2.1")
+print(ds["train"][0])
+ 
+----------
+pip install kaggle
+ 
+kaggle datasets download -d allen-institute-for-ai/CORD-19-research-challenge
+unzip CORD-19-research-challenge.zip
+ 
+----------
+Build your own Dataset:
+from langchain_community.document_loaders import WebBaseLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+ 
+urls = [
+    "https://docs.docker.com/config/daemon/",
+    "https://docs.docker.com/get-started/overview/"
+]
+ 
+docs = [WebBaseLoader(url).load() for url in urls]
+docs = [d for sublist in docs for d in sublist]
+ 
+splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+chunks = splitter.split_documents(docs)
+print(f"Prepared {len(chunks)} chunks for vectorization.")
+ 
+ 
+-------------
+HugginFace
+Kaggle
+Google Dataset
+DataHub.io
+ 
+-------CUSTOM
+Scientific / Technical:
+Semantic Scholar Open Research Corpus → https://api.semanticscholar.org/corpus/
+ArXiv Dataset → https://www.kaggle.com/Cornell-University/arxiv
+PubMed / MedQA → https://huggingface.co/datasets/pubmed_qa
+ 
+Finance & Business:
+Yahoo Finance / Kaggle Financial News → https://www.kaggle.com/datasets
+SEC 10-K / EDGAR filings → https://www.sec.gov/dera/data/
+FinNLP Hub (Financial NLP) → https://github.com/krzjoa/awesome-financial-nlp
+ 
+Software / DevOps (for your VTune/Docker-like projects):
+StackExchange Data Dump → https://archive.org/details/stackexchange
+GitHub Issues Datasets (via GH Archive) → https://www.gharchive.org/
+Docker Docs Crawl (you can build your own) → Use WebBaseLoader to scrape specific doc pages
+ 
+Healthcare:
+MIMIC-III / MIMIC-IV (Clinical Notes) → https://physionet.org/content/mimiciv/
+PubMedQA / BioASQ → https://bioasq.org/
+ 
+Legal / Policy:
+CaseLaw Access Project (Harvard) → https://case.law/
+ECtHR Open Case Law → https://echr-opendata.eu/
