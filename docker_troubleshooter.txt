@@ -1,0 +1,242 @@
+# ============================
+# 1. Install Dependencies
+# ============================
+
+# Uncomment if running fresh
+# %pip install -U langgraph "langchain[openai]" langchain-community \
+#     langchain-text-splitters langchain-chroma langchain-groq python-dotenv
+
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+# Add your Groq API key
+os.environ["GROQ_API_KEY"] = "your_groq_api_key_here"
+
+
+
+# ============================
+# 2. Load and Split Documents
+# ============================
+
+from langchain_community.document_loaders import WebBaseLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+# Choose a few URLs from Docker documentation
+urls = [
+    "https://docs.docker.com/get-started/overview/",
+    "https://docs.docker.com/config/daemon/",
+    "https://docs.docker.com/engine/reference/commandline/cli/",
+    "https://docs.docker.com/config/containers/resource_constraints/",
+]
+
+# Load the web pages
+docs = [WebBaseLoader(url).load() for url in urls]
+docs = [d for sublist in docs for d in sublist]
+
+# Split into manageable text chunks
+text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+    chunk_size=1000, chunk_overlap=100
+)
+doc_splits = text_splitter.split_documents(docs)
+
+print(f"Loaded {len(doc_splits)} chunks.")
+
+
+# ============================
+# 3. Create & Persist Vector Database
+# ============================
+
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_chroma import Chroma
+
+embedding_model = HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2')
+
+# Persist vectorstore (local DB)
+vectorstore = Chroma.from_documents(
+    documents=doc_splits,
+    embedding=embedding_model,
+    persist_directory="docker_vector_db"
+)
+
+retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+print("Vector database ready.")
+
+
+# ============================
+# 4. Create Retriever Tool
+# ============================
+
+from langchain_core.tools.retriever import create_retriever_tool
+
+retriever_tool = create_retriever_tool(
+    retriever,
+    name="retrieve_docker_docs",
+    description="Search Docker documentation for relevant configuration or troubleshooting information."
+)
+
+
+# ============================
+# 5. Initialize LLM (Groq)
+# ============================
+
+from langchain_groq import ChatGroq
+
+response_model = ChatGroq(
+    model="openai/gpt-oss-20b",
+    temperature=0,
+    max_tokens=None,
+)
+
+
+# ============================
+# 6. Define Core Functions
+# ============================
+
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages.ai import AIMessage
+from langgraph.graph import MessagesState
+
+# --- Generate or Retrieve ---
+def generate_query_or_respond(state: MessagesState):
+    prompt = ChatPromptTemplate.from_template("""
+    You are a Docker troubleshooting assistant.
+    Use the provided context to answer the question concisely.
+    If you don't know, say you don't know.
+
+    Context:
+    {context}
+
+    Question:
+    {question}
+
+    Answer:
+    """)
+
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
+
+    qa_chain = (
+        {
+            "context": retriever | format_docs,
+            "question": RunnablePassthrough(),
+        }
+        | prompt
+        | response_model
+        | StrOutputParser()
+    )
+
+    response = qa_chain.invoke(state["messages"][0]["content"])
+    answer = AIMessage(content=response)
+    return {"messages": [answer]}
+
+
+# ============================
+# 7. Grading, Rewriting, and Answering Nodes
+# ============================
+
+from pydantic import BaseModel, Field
+from typing import Literal
+from langchain_core.messages import convert_to_messages
+
+# ---- Document Grader ----
+GRADE_PROMPT = (
+    "You are a grader assessing relevance of a retrieved document to a user question. \n"
+    "Here is the document: \n\n {context} \n\n"
+    "Question: {question} \n"
+    "If relevant, answer 'yes'; otherwise 'no'."
+)
+
+class GradeDocuments(BaseModel):
+    binary_score: str = Field(description="'yes' if relevant, else 'no'")
+
+def grade_documents(state: MessagesState) -> Literal["generate_answer", "rewrite_question"]:
+    question = state["messages"][0].content
+    context = state["messages"][-1].content
+
+    prompt = GRADE_PROMPT.format(question=question, context=context)
+    response = (
+        response_model
+        .with_structured_output(GradeDocuments)
+        .invoke([{"role": "user", "content": prompt}])
+    )
+
+    return "generate_answer" if response.binary_score == "yes" else "rewrite_question"
+
+
+# ---- Rewrite Question ----
+REWRITE_PROMPT = (
+    "Rewrite this Docker-related question to make it clearer and more specific.\n\n"
+    "Original question:\n{question}"
+)
+
+def rewrite_question(state: MessagesState):
+    question = state["messages"][0].content
+    prompt = REWRITE_PROMPT.format(question=question)
+    response = response_model.invoke([{"role": "user", "content": prompt}])
+    return {"messages": [{"role": "user", "content": response.content}]}
+
+
+# ---- Generate Final Answer ----
+GENERATE_PROMPT = (
+    "You are a Docker expert. "
+    "Use the following retrieved context to answer the question concisely in 3–4 sentences.\n\n"
+    "Question: {question}\n"
+    "Context: {context}"
+)
+
+def generate_answer(state: MessagesState):
+    question = state["messages"][0].content
+    context = state["messages"][-1].content
+    prompt = GENERATE_PROMPT.format(question=question, context=context)
+    response = response_model.invoke([{"role": "user", "content": prompt}])
+    return {"messages": [response]}
+
+
+# ============================
+# 8. Assemble the LangGraph Workflow
+# ============================
+
+from langgraph.graph import StateGraph, START, END
+from langgraph.prebuilt import ToolNode, tools_condition
+
+workflow = StateGraph(MessagesState)
+
+# Add nodes
+workflow.add_node("generate_query_or_respond", generate_query_or_respond)
+workflow.add_node("retrieve", ToolNode([retriever_tool]))
+workflow.add_node("rewrite_question", rewrite_question)
+workflow.add_node("generate_answer", generate_answer)
+
+# Define edges
+workflow.add_edge(START, "generate_query_or_respond")
+
+workflow.add_conditional_edges(
+    "generate_query_or_respond",
+    tools_condition,
+    {"tools": "retrieve", END: END},
+)
+
+workflow.add_conditional_edges("retrieve", grade_documents)
+workflow.add_edge("generate_answer", END)
+workflow.add_edge("rewrite_question", "generate_query_or_respond")
+
+graph = workflow.compile()
+
+print("LangGraph workflow compiled successfully.")
+
+# ============================
+# 9. Test the RAG Assistant
+# ============================
+
+query = "Docker daemon fails to start — what could be wrong?"
+
+for chunk in graph.stream({"messages": [{"role": "user", "content": query}]}):
+    for node, update in chunk.items():
+        print(f"\n📍 Update from node: {node}")
+        try:
+            update["messages"][-1].pretty_print()
+        except:
+            print(update["messages"][-1])
