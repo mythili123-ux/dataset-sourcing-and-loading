@@ -1,0 +1,64 @@
+pip install virtualenv
+
+or
+
+Sudo apt-get install virtualenv
+
+================
+mkdir backend
+cd backend
+
+python -m venv team14_regionals_env
+#Linux
+source team14_hyd_regionals_env/bin/activate
+
+#Windows
+team14_hyd_regionals_env\scripts\activate
+
+pip install Flask
+=================
+#test application create a file Hello.py
+from flask import Flask
+app = Flask(__name__)
+
+@app.route("/")
+def greet():
+    return "Hello World"
+
+if __name__ == '__main__':
+    app.run() #app.run(host, port, debug, options)
+
+--------
+# Running application
+python Hello.py
+
+
+===================
+If needed sql setup:
+https://sqlite.org/2025/sqlite-tools-win-x64-3510100.zip
+
+rename the extracted folder name to sqlite
+
+and place it in below folder
+C:\Users\GenAIHYDSYPUSR70\
+
+open cmd and run below command
+New-Alias sqlite3 "C:\Users\<YOUR_USERNAME>\sqlite\sqlite3.exe"
+
+verify
+sqlite3 --version
+
+-----
+# In bash
+echo 'alias sqlite3="/c/Users/GenAIHYDSYPUSR69/sqlite/sqlite3.exe"' >> ~/.bashrc
+
+source ~/.bashrc
+
+sqlite3 --version
+
+========
+# Download and install node
+Install
+SSL issue for react app creation: npm config set strict-ssl false
+
+Creating React app: npm create vite@latest frontend
